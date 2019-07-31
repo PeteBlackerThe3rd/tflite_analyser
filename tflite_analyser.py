@@ -38,15 +38,35 @@ import flatbuffer_reader as reader
 FLAGS = None
 
 
+def trim_file_name(file_name):
+
+    if file_name[-7] == ".tflite":
+        return file_name[0:-7]
+    else:
+        return file_name
+
+
 def print_ops_summary(model):
 
     print("\nOperations used by graph 0:")
+    max_name_len = 0
+    for i, op in enumerate(model.operator_codes):
+        if op.CustomCode() is None:
+            max_name_len = max(max_name_len, len(model.operator_builtin_names[i]))
+        else:
+            max_name_len = max(max_name_len, len(op.CustomCode().decode()))
+
     for i, op in enumerate(model.operator_codes):
 
         if op.CustomCode() is None:
-            print("Builtin [%s, version %d]" % (model.operator_builtin_names[i], op.Version()))
+            print("%s%s version %2d (builtin)" %
+                  (model.operator_builtin_names[i],
+                   " " * (max_name_len - len(model.operator_builtin_names[i])),
+                   op.Version()))
         else:
-            print("Custom [%s]" % op.CustomCode())
+            print("%s%s            (custom)" %
+                  (op.CustomCode().decode(),
+                   " " * (max_name_len - len(op.CustomCode().decode()))))
 
 
 def print_weights_summary(model):
@@ -93,6 +113,77 @@ def print_weights_summary(model):
                        shape_str))
 
 
+def print_tensor_summary(model):
+    print("\nGraph contains %d tensors\n" % len(model.tensors))
+
+
+def print_sub_graphs_summary(model):
+    print("\nThis TFlite flatbuffer contains %d sub_graphs" % len(model.subgraph_names))
+
+    for i, sg in enumerate(model.subgraph_names):
+        print("[%2d] - %s" % (i, sg))
+
+def print_memory_summary(model):
+
+    print("\nDynamic tensors requiring memory allocation.\n")
+    print("This model contains %d operations." % model.graph.OperatorsLength())
+
+    max_name_length = 0
+    for idx, tensor in enumerate(model.tensors):
+        buffer_size = model.buffers[model.tensors[idx].Buffer()].DataLength()
+        if model.tensor_types[idx] == 'Intermediate' and buffer_size == 0:
+            name_length = len(model.tensors[idx].Name().decode())
+            max_name_length = max(max_name_length, name_length)
+
+    print("\n    Tensor Name%s (Size Bytes)  [Generating Op]  [Final Use Op]" %
+          ((" " * (max_name_length - len(model.tensors[idx].Name().decode()))),
+           ))
+    for idx, tensor in enumerate(model.tensors):
+        buffer_size = model.buffers[model.tensors[idx].Buffer()].DataLength()
+        if model.tensor_types[idx] == 'Intermediate' and buffer_size == 0:
+            print("%s%s  (%10d)       [%4s]         [%4s]" %
+                  (model.tensors[idx].Name().decode(),
+                   " " * (max_name_length - len(model.tensors[idx].Name().decode())),
+                   model.tensor_memory_sizes[idx],
+                   model.tensor_first_creation[idx],
+                   model.tensor_final_use[idx]))
+
+def save_memory_summary(model):
+
+    # Open csv file
+    grid_file_name = trim_file_name(FLAGS.file_name) + "_memory_grid.csv"
+    grid_csv_file = None
+    try:
+        grid_csv_file = open(grid_file_name, "w")
+    except IOError:
+        print("Error failed to open csv file \"%s\" for writing. Exiting.")
+        quit()
+
+    # write header
+    grid_csv_file.write("Tensor Name, Tensor Size")
+    for op in range(model.graph.OperatorsLength()):
+        grid_csv_file.write(", Op %d" % op)
+    grid_csv_file.write("\n")
+
+    # write tensor usage grid
+    for op in range(model.graph.OperatorsLength()):
+        for idx, tensor in enumerate(model.tensors):
+            if model.tensor_first_creation[idx] == op:
+                buffer_size = model.buffers[model.tensors[idx].Buffer()].DataLength()
+                if model.tensor_types[idx] == 'Intermediate' and buffer_size == 0:
+                    grid_csv_file.write("%s, %d" %
+                                        (model.tensors[idx].Name().decode(),
+                                         model.tensor_memory_sizes[idx]))
+
+                    for op in range(model.graph.OperatorsLength()):
+                        if op >= model.tensor_first_creation[idx] and op <= model.tensor_final_use[idx]:
+                            grid_csv_file.write(", ###")
+                        else:
+                            grid_csv_file.write(", ")
+                    grid_csv_file.write("\n")
+
+    grid_csv_file.close()
+
 def main():
 
     tflite_file = None
@@ -106,23 +197,49 @@ def main():
     flatbuffer = tflite_file.read()
     print("Done.")
 
-    model = reader.AnalysedTFliteModel(flatbuffer)
+    model = reader.AnalysedTFliteModel(flatbuffer, FLAGS.index)
+    print("Analysing graph[%d] - %s" %
+          (FLAGS.index,
+           model.subgraph_names[FLAGS.index]))
 
     if FLAGS.op_types or FLAGS.all:
         print_ops_summary(model)
 
+    if FLAGS.sub_graphs:
+        print_sub_graphs_summary(model)
+
     if FLAGS.weights or FLAGS.all:
         print_weights_summary(model)
+
+    if FLAGS.memory or FLAGS.all:
+        print_memory_summary(model)
+        if FLAGS.save_csv:
+            save_memory_summary(model)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('file_name', type=str, help='Name of the tflite flatbuffer file to load.')
+    parser.add_argument('-i',  '--index',
+                        type=int, default=0,
+                        help='Index of the subgraph to analyse. Defaults to 0')
     parser.add_argument('-a', '--all', action="store_true", help='Print out all details of this model.')
-    parser.add_argument('-t', '--op_types',
+    parser.add_argument('-sg', '--sub_graphs',
+                        action="store_true",
+                        help='Print a list of all the graphs stored in this tflite flatbuffer.')
+    parser.add_argument('-ot', '--op_types',
                         action="store_true",
                         help='Print a summary of the operation types used in this model.')
     parser.add_argument('-w', '--weights', action="store_true", help='Print detail of the weights of this model.')
+    parser.add_argument('-m', '--memory',
+                        action="store_true",
+                        help='Print details of memory allocation required by this model.')
+    parser.add_argument('-t', '--tensors',
+                        action="store_true",
+                        help='Print details of the tensors used in this model.')
+    parser.add_argument('-s', '--save_csv',
+                        action="store_true",
+                        help='Write the selected detail to a set of CSV files.')
 
     FLAGS, unparsed = parser.parse_known_args()
 

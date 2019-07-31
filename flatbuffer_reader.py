@@ -75,6 +75,24 @@ class AnalysedTFliteModel:
         for type in tfl_tensortype.TensorType.__dict__.keys():
             self.types[tfl_tensortype.TensorType.__dict__[type]] = type
 
+        # This bit isn't future proof, but I can't see a sensible way of doing this dynamically
+        self.type_sizes = {0: 4,   # float32
+                           1: 2,   # float16
+                           2: 4,   # int32
+                           3: 1,   # uint8
+                           4: 8,   # int64
+                           5: -1,  # string (undefined)
+                           6: -1,  # bool (don't know how TFL implements bools yet!)
+                           7: 2,   # int16
+                           8: 8,   # complex64
+                           9: 1}   # int8
+
+        # Create a list of sub-graphs in this tflite flatbuffer
+        self.subgraph_names = []
+        for i in range(self.model.SubgraphsLength()):
+            subgraph = self.model.Subgraphs(i)
+            self.subgraph_names += [subgraph.Name()]
+
         # Create the list of operation types used in this graph. This list is used
         # by operation objects to index the actual type of operator each instance is
         self.operator_codes = []
@@ -115,6 +133,7 @@ class AnalysedTFliteModel:
 
         self.tensors = []
         self.tensor_types = []
+        self.tensor_memory_sizes = []
 
         for i in range(graph.TensorsLength()):
             tensor = graph.Tensors(i)
@@ -127,6 +146,12 @@ class AnalysedTFliteModel:
             if i in outputs:
                 type = "Output"
             self.tensor_types += [type]
+
+            shape = tensor.ShapeAsNumpy()
+            element_count = 1
+            if shape.size > 0:
+                element_count = shape.prod()
+            self.tensor_memory_sizes += [element_count * self.type_sizes[tensor.Type()]]
 
         # Create summary of model weights and types
         self.weights_tensor_count = 0
@@ -153,6 +178,28 @@ class AnalysedTFliteModel:
 
                     self.weight_types[tensor.Type()]['weights'] += weights_count
                     self.weight_types[tensor.Type()]['bytes'] += self.buffers[tensor.Buffer()].DataLength()
+
+        # find earliest creation and final usage of each buffer by scanning the operations list
+        self.tensor_first_creation = [None] * len(self.tensors)
+        self.tensor_final_use = [None] * len(self.tensors)
+
+        for tensor in self.tensors:
+            pass
+            # Todo calculate tensor memory sizes
+
+        for op_idx in range(self.graph.OperatorsLength()):
+            op = self.graph.Operators(op_idx)
+            for i in range(op.InputsLength()):
+                input_buffer_idx = op.Inputs(i)
+                if input_buffer_idx >= 0:
+                    if self.tensor_final_use[input_buffer_idx] is None or self.tensor_final_use[input_buffer_idx] > op_idx:
+                        self.tensor_final_use[input_buffer_idx] = op_idx
+
+            for o in range(op.OutputsLength()):
+                output_buffer_idx = op.Outputs(o)
+                if output_buffer_idx >= 0:
+                    if self.tensor_first_creation[output_buffer_idx] is None or self.tensor_first_creation[output_buffer_idx] < op_idx:
+                        self.tensor_first_creation[output_buffer_idx] = op_idx
 
     @staticmethod
     def get_ctype_from_idx(type_idx):
