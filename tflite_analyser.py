@@ -34,6 +34,7 @@ import flatbuffers as fb
 import tflite.Model as tfl_model
 import tflite.BuiltinOperator as BuiltinOperator
 import flatbuffer_reader as reader
+import memory_optimiser as mem_opt
 
 FLAGS = None
 
@@ -184,6 +185,17 @@ def save_memory_summary(model):
 
     grid_csv_file.close()
 
+def optimise_memory(model):
+
+    requirements = model.get_memory_requirements()
+
+    requirements.print_requirements()
+
+    requirements.optimise()
+
+    requirements.print_solution()
+
+
 def main():
 
     tflite_file = None
@@ -216,6 +228,9 @@ def main():
         if FLAGS.save_csv:
             save_memory_summary(model)
 
+    if FLAGS.optimise_memory:
+        optimise_memory(model)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -240,6 +255,9 @@ if __name__ == '__main__':
     parser.add_argument('-s', '--save_csv',
                         action="store_true",
                         help='Write the selected detail to a set of CSV files.')
+    parser.add_argument('-om', '--optimise_memory',
+                        action="store_true",
+                        help='Uses various algorithms to precalculate an optimal memory useage pattern.')
 
     FLAGS, unparsed = parser.parse_known_args()
 

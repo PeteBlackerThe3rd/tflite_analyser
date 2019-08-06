@@ -38,6 +38,7 @@ import tflite.ReshapeOptions as tfl_ReshapeOptions
 import tflite.LeakyReluOptions as tfl_LeakyReluOptions
 import tflite.FullyConnectedOptions as tfl_FullyConnectedOptions
 
+import memory_optimiser as mem_opt
 
 class AnalysedTFliteModel:
 
@@ -200,6 +201,26 @@ class AnalysedTFliteModel:
                 if output_buffer_idx >= 0:
                     if self.tensor_first_creation[output_buffer_idx] is None or self.tensor_first_creation[output_buffer_idx] < op_idx:
                         self.tensor_first_creation[output_buffer_idx] = op_idx
+
+    def get_memory_requirements(self):
+
+        requirements = mem_opt.MemoryRequirements()
+
+        for i in range(len(self.tensors)):
+            buffer_size = self.buffers[self.tensors[i].Buffer()].DataLength()
+            if self.tensor_types[i] == 'Intermediate' and buffer_size == 0:
+
+                creation = self.tensor_first_creation[i]
+                last_use = self.tensor_final_use[i]
+                size = self.tensor_memory_sizes[i]
+
+                block  = mem_opt.MemoryBlock(creation=creation,
+                                             last_use=last_use,
+                                             size=size)
+
+                requirements.blocks += [block]
+
+        return requirements
 
     @staticmethod
     def get_ctype_from_idx(type_idx):
