@@ -49,7 +49,7 @@ def trim_file_name(file_name):
 
 def print_ops_summary(model):
 
-    print("\nOperations used by graph 0:")
+    print("\nOperation types used by graph %d:" % FLAGS.index)
     max_name_len = 0
     for i, op in enumerate(model.operator_codes):
         if op.CustomCode() is None:
@@ -68,6 +68,13 @@ def print_ops_summary(model):
             print("%s%s            (custom)" %
                   (op.CustomCode().decode(),
                    " " * (max_name_len - len(op.CustomCode().decode()))))
+
+
+def print_operations_summary(model):
+
+    print("\nOperations used by graph %d:" % FLAGS.index)
+
+    print("TODO")
 
 
 def print_weights_summary(model):
@@ -117,6 +124,25 @@ def print_weights_summary(model):
 def print_tensor_summary(model):
     print("\nGraph contains %d tensors\n" % len(model.tensors))
 
+    for t_idx in range(len(model.tensors)):
+
+        str_dims = []
+        for dim in model.tensor_shapes[t_idx]:
+            str_dims = str(dim)
+        shape_str = ",".join(str_dims)
+
+        op_range = None
+        if model.tensor_first_creation[t_idx] is not None and model.tensor_final_use[t_idx] is not None:
+            op_range = model.tensor_final_use[t_idx] - model.tensor_first_creation[t_idx] + 1
+
+        print("[%s] (%s) shape[%s] op_range (%s-%s : %s) deps: %d" %
+              (model.tensor_names[t_idx],
+               model.tensor_types[t_idx],
+               shape_str,
+               model.tensor_first_creation[t_idx],
+               model.tensor_final_use[t_idx],
+               op_range,
+               model.tensor_dependant_op_count[t_idx]))
 
 def print_sub_graphs_summary(model):
     print("\nThis TFlite flatbuffer contains %d sub_graphs" % len(model.subgraph_names))
@@ -185,29 +211,33 @@ def save_memory_summary(model):
 
     grid_csv_file.close()
 
-def optimise_memory(model):
+def optimise_memory(model, base_file_name=""):
 
     requirements = model.get_memory_requirements()
 
-    requirements.print_requirements()
+    # requirements.print_requirements()
 
-    requirements.optimise()
+    requirements.optimise(base_file_name)
 
     requirements.print_solution()
 
 
-def main():
+def process_tflite_file(file_name):
 
     tflite_file = None
     try:
-        tflite_file = open(FLAGS.file_name, 'rb')
+        tflite_file = open(file_name, 'rb')
     except IOError:
-        print("Failed to open file \"%s\"." % FLAGS.file_name)
+        print("Failed to open file \"%s\"." % file_name)
         quit()
 
-    print("Reading flatbuffer \"%s\"" % FLAGS.file_name)
+    print("====== Reading flatbuffer \"%s\" ======" % file_name)
     flatbuffer = tflite_file.read()
     print("Done.")
+
+    base_name = file_name
+    if base_name[-7:] == ".tflite":
+        base_name = base_name[:-7]
 
     model = reader.AnalysedTFliteModel(flatbuffer, FLAGS.index)
     print("Analysing graph[%d] - %s" %
@@ -228,8 +258,30 @@ def main():
         if FLAGS.save_csv:
             save_memory_summary(model)
 
+    if FLAGS.tensors or FLAGS.all:
+        print_tensor_summary(model)
+
+    if FLAGS.operations or FLAGS.all:
+        print_operations_summary(model)
+
     if FLAGS.optimise_memory:
-        optimise_memory(model)
+        optimise_memory(model, base_file_name=base_name)
+
+def main():
+
+    # if a filename was given then process the single file
+    if os.path.isfile(FLAGS.file_name):
+        process_tflite_file(FLAGS.file_name)
+    else:  # if a directory name was given then process all .tflite files in that directory
+        dir_contents = os.listdir(FLAGS.file_name)
+
+        print("Found %d entries in directory to process." % len(dir_contents))
+
+        for entry in dir_contents:
+            file_path = os.path.join(FLAGS.file_name, entry)
+            print("Processing [%s] ext is [%s]" % (file_path, file_path[-7:]))
+            if os.path.isfile(file_path) and file_path[-7:] == ".tflite":
+                process_tflite_file(file_path)
 
 
 if __name__ == '__main__':
@@ -242,6 +294,9 @@ if __name__ == '__main__':
     parser.add_argument('-sg', '--sub_graphs',
                         action="store_true",
                         help='Print a list of all the graphs stored in this tflite flatbuffer.')
+    parser.add_argument('-o', '--operations',
+                        action="store_true",
+                        help='Print a summary of the operations used in this model.')
     parser.add_argument('-ot', '--op_types',
                         action="store_true",
                         help='Print a summary of the operation types used in this model.')

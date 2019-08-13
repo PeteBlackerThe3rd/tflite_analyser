@@ -21,8 +21,7 @@
 
     -------------------------------------------------------------
 
-    Core Exporter object which is used by end user code to generate C++
-    implementations of TensorFlow models.
+    ...
 """
 import os
 import tensorflow as tf
@@ -39,6 +38,23 @@ import tflite.LeakyReluOptions as tfl_LeakyReluOptions
 import tflite.FullyConnectedOptions as tfl_FullyConnectedOptions
 
 import memory_optimiser as mem_opt
+
+class SortableOperation:
+
+    def __init__(self, idx, inputs, outputs):
+
+        self.original_idx = idx
+        self.input_ops = inputs
+        self.output_ops = outputs
+
+        self.eager_depth = None
+        self.lazy_depth = None
+
+    def is_input(self):
+        return len(inputs) == 0
+
+    def is_output(self):
+        return len(outputs) == 0
 
 class AnalysedTFliteModel:
 
@@ -73,8 +89,8 @@ class AnalysedTFliteModel:
         # Create the list of types used by the TFlite schema. This is probabably pretty fixed
         # but we generate it dynamically here so it's future proof against updates
         self.types = {}
-        for type in tfl_tensortype.TensorType.__dict__.keys():
-            self.types[tfl_tensortype.TensorType.__dict__[type]] = type
+        for t_type in tfl_tensortype.TensorType.__dict__.keys():
+            self.types[tfl_tensortype.TensorType.__dict__[t_type]] = t_type
 
         # This bit isn't future proof, but I can't see a sensible way of doing this dynamically
         self.type_sizes = {0: 4,   # float32
@@ -135,20 +151,27 @@ class AnalysedTFliteModel:
         self.tensors = []
         self.tensor_types = []
         self.tensor_memory_sizes = []
+        self.tensor_names = []
+        self.tensor_shapes = []
 
         for i in range(graph.TensorsLength()):
             tensor = graph.Tensors(i)
 
             self.tensors += [tensor]
+            self.tensor_names += ["ToDo"]
 
-            type = "Intermediate"
+            t_type = "Intermediate"
             if i in inputs:
-                type = "Input"
+                t_type = "Input"
             if i in outputs:
-                type = "Output"
-            self.tensor_types += [type]
+                t_type = "Output"
+            self.tensor_types += [t_type]
 
             shape = tensor.ShapeAsNumpy()
+            if isinstance(shape, int):
+                shape = np.array([shape])
+
+            self.tensor_shapes += [shape]
             element_count = 1
             if shape.size > 0:
                 element_count = shape.prod()
@@ -171,8 +194,11 @@ class AnalysedTFliteModel:
                     self.weights_tensor_count += 1
 
                     weights_count = 1
-                    if tensor.ShapeAsNumpy().size > 0:
-                        weights_count = tensor.ShapeAsNumpy().prod()
+                    shape = tensor.ShapeAsNumpy()
+                    if isinstance(shape, int):
+                        shape = np.array([shape])
+                    if shape.size > 0:
+                        weights_count = shape.prod()
 
                     self.total_weights += weights_count
                     self.total_weights_bytes += self.buffers[tensor.Buffer()].DataLength()
@@ -183,32 +209,71 @@ class AnalysedTFliteModel:
         # find earliest creation and final usage of each buffer by scanning the operations list
         self.tensor_first_creation = [None] * len(self.tensors)
         self.tensor_final_use = [None] * len(self.tensors)
-
-        for tensor in self.tensors:
-            pass
-            # Todo calculate tensor memory sizes
+        self.tensor_dependant_op_count = [0] * len(self.tensors)
+        self.tensor_creating_op_idx = [None] * len(self.tensors)
 
         for op_idx in range(self.graph.OperatorsLength()):
             op = self.graph.Operators(op_idx)
             for i in range(op.InputsLength()):
                 input_buffer_idx = op.Inputs(i)
+                self.tensor_dependant_op_count[input_buffer_idx] += 1
+
                 if input_buffer_idx >= 0:
-                    if self.tensor_final_use[input_buffer_idx] is None or self.tensor_final_use[input_buffer_idx] > op_idx:
+                    if self.tensor_final_use[input_buffer_idx] is None or self.tensor_final_use[input_buffer_idx] < op_idx:
                         self.tensor_final_use[input_buffer_idx] = op_idx
 
             for o in range(op.OutputsLength()):
                 output_buffer_idx = op.Outputs(o)
                 if output_buffer_idx >= 0:
+                    self.tensor_creating_op_idx[output_buffer_idx] = op_idx
                     if self.tensor_first_creation[output_buffer_idx] is None or self.tensor_first_creation[output_buffer_idx] < op_idx:
                         self.tensor_first_creation[output_buffer_idx] = op_idx
 
-    def get_memory_requirements(self):
+    def get_sortable_operation_list(self):
+
+        s_operations = []
+
+        # create list of sortable operation objects with 1:1 matching to the original operations
+        for op_idx in range(self.graph.OperatorsLength()):
+            op = self.graph.Operators(op_idx)
+
+            # get list of operations feeding directly into this one
+            input_ops = []
+            for i in range(op.InputsLength()):
+                input_buffer_idx = op.Inputs(i)
+                input_op_idx = self.tensor_creating_op_idx[input_buffer_idx]
+                input_ops += [input_op_idx]
+
+            # outputs left empty for now, will be filled in the next pass
+
+            # add operation
+            s_operations += [SortableOperation(op_idx, input_ops, [])]
+
+        # reciprocate all the input operations to fill all output operations
+        for s_op in s_operations:
+            for input_op_idx in s_op.input_ops:
+                s_operations[input_op_idx].output_ops += [s_op.original_idx]
+
+        # calculate the eager depth of operations by iterating from inputs
+
+        return operations
+
+
+    def get_memory_requirements(self, reorder_execution=None):
 
         requirements = mem_opt.MemoryRequirements()
 
+        # if operation re-ordering was requested
+        if reorder_execution == "Eager":
+            pass
+        elif reorder_execution == "Lazy":
+
+
         for i in range(len(self.tensors)):
             buffer_size = self.buffers[self.tensors[i].Buffer()].DataLength()
-            if self.tensor_types[i] == 'Intermediate' and buffer_size == 0:
+            if self.tensor_types[i] == 'Intermediate' and buffer_size == 0 and\
+                    isinstance(self.tensor_first_creation[i], int) and\
+                    isinstance(self.tensor_final_use[i], int):
 
                 creation = self.tensor_first_creation[i]
                 last_use = self.tensor_final_use[i]
