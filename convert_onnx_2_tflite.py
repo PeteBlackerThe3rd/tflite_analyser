@@ -25,14 +25,8 @@ def find_between(s, first, last):
 
 class Converter():
 
-  MODEL_PATH = "pointilism.onnx"  # Passes
-
-  # MODEL_PATH = "docnn-130.onnx"  # Fails
-  # MODEL_PATH = "bert10.onnx"  # Fails
-  # MODEL_PATH = "bidaf.onnx"  # Fails
-  # MODEL_PATH = "mask_rcnn_R_50_FPN_1x.onnx"  # Fails
-
-  # MODEL_PATH = "squeezenet1.1.onnx"  # Passes
+  def __init__(self):
+    pass
 
   def convert(self, input_filename, output_filename):
 
