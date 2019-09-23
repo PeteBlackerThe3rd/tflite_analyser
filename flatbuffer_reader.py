@@ -51,10 +51,23 @@ class SortableOperation:
         self.lazy_depth = None
 
     def is_input(self):
-        return len(inputs) == 0
+        return len(self.input_ops) == 0
 
     def is_output(self):
-        return len(outputs) == 0
+        return len(self.output_ops) == 0
+
+    def update_lazy_depth(self, s_op_list, depth=0, debug=""):
+
+        #if depth > 15:
+        #    return
+
+        # print("%s-[%d]" % (debug, depth))
+
+        if self.lazy_depth is None or self.lazy_depth < depth:
+            self.lazy_depth = depth
+
+            for i, input_idx in enumerate(self.input_ops):
+                s_op_list[input_idx].update_lazy_depth(s_op_list, depth+1, debug=debug+("_%d" % i))
 
 class AnalysedTFliteModel:
 
@@ -229,9 +242,12 @@ class AnalysedTFliteModel:
                     if self.tensor_first_creation[output_buffer_idx] is None or self.tensor_first_creation[output_buffer_idx] < op_idx:
                         self.tensor_first_creation[output_buffer_idx] = op_idx
 
+
     def get_sortable_operation_list(self):
 
         s_operations = []
+
+        #print("getting sortable operation list")
 
         # create list of sortable operation objects with 1:1 matching to the original operations
         for op_idx in range(self.graph.OperatorsLength()):
@@ -242,41 +258,150 @@ class AnalysedTFliteModel:
             for i in range(op.InputsLength()):
                 input_buffer_idx = op.Inputs(i)
                 input_op_idx = self.tensor_creating_op_idx[input_buffer_idx]
-                input_ops += [input_op_idx]
+                if input_op_idx is not None:
+                    input_ops += [input_op_idx]
+
+            # print("added a sortable operation with %d inputs!" % len(input_ops))
 
             # outputs left empty for now, will be filled in the next pass
 
             # add operation
             s_operations += [SortableOperation(op_idx, input_ops, [])]
 
+        #print("reciprocating input links")
+
         # reciprocate all the input operations to fill all output operations
         for s_op in s_operations:
             for input_op_idx in s_op.input_ops:
                 s_operations[input_op_idx].output_ops += [s_op.original_idx]
 
-        # calculate the eager depth of operations by iterating from inputs
+        # calculate the eager depth of operations by recurrsing from inputs
+        # TODO
 
-        return operations
+        #print("Calculating operation lazy_depths")
+
+        # calculate the lazy depth of operations by recurrsing from outputs.
+        # lazy depth is defined as the maximum number of operations between any
+        # operation and one of the output operations.
+        for s_op in s_operations:
+            if s_op.is_output():
+                s_op.update_lazy_depth(s_operations)
+
+        return s_operations
 
 
     def get_memory_requirements(self, reorder_execution=None):
 
         requirements = mem_opt.MemoryRequirements()
 
+        s_ops = self.get_sortable_operation_list()
+
         # if operation re-ordering was requested
         if reorder_execution == "Eager":
             pass
         elif reorder_execution == "Lazy":
 
+            # add operations starting from inputs in decreasing order of lazy depth
+            new_order = []
+            frontier = []
+            frontier_depth = []
+
+            # add inputs
+            for s_op in s_ops:
+                if s_op.is_input():
+                    new_order += [s_op]
+
+            # add frontier operations soley dependant upon input ops
+            for s_op in s_ops:
+
+                in_new_order = False
+                for no_op in new_order:
+                    if s_op.original_idx == no_op.original_idx:
+                        in_new_order = True
+                        break
+
+                if not in_new_order:
+                    all_inputs_ready = True
+                    for i in s_op.input_ops:
+                        if s_ops[i] not in new_order:
+                            all_inputs_ready = False
+                    if all_inputs_ready:
+                        frontier += [s_op]
+                        frontier_depth += [s_op.lazy_depth]
+
+            """print("Starting lazy execution op re-ordering with %d inputs and %d frontier ops" %
+                  (len(new_order),
+                   len(frontier)))"""
+
+            # while there are any frontier ops left add them one at a time
+            while len(frontier) > 0:
+
+                """print("Adding lazy operations new_order(%d) frontier(%d)" %
+                      (len(new_order),
+                       len(frontier)))
+
+                print("Frontier is:")
+                for i, f in enumerate(frontier):
+                    print("Op[%d] depth[%d]" %
+                          (f.original_idx,
+                           frontier_depth[i]))"""
+
+                # find a frontier op with the highest lazy_depth and add it
+                highest_depth_idx = frontier_depth.index(max(frontier_depth))
+                highest_depth_op_idx = frontier[highest_depth_idx].original_idx
+                new_order += [s_ops[highest_depth_op_idx]]
+
+                #print("Added operation %d to new_order" % highest_depth_idx)
+
+                # re-generate frontier ops
+                frontier = []
+                frontier_depth = []
+                for s_op in s_ops:
+
+                    """in_new_order = False
+                    for no_op in new_order:
+                        if s_op.original_idx == no_op.original_idx:
+                            in_new_order = True
+                            break"""
+
+                    if s_op not in new_order:
+                        all_inputs_ready = True
+                        for i in s_op.input_ops:
+                            if s_ops[i] not in new_order:
+                                all_inputs_ready = False
+                        if all_inputs_ready:
+                            frontier += [s_op]
+                            frontier_depth += [s_op.lazy_depth]
+
+            s_ops = new_order
+
+        # re-calculate creation and last use operations for each tensor after re-ordering operations
+        reord_tensor_first_creation = [None] * len(self.tensors)
+        reord_tensor_final_use = [None] * len(self.tensors)
+
+        for op_idx in range(len(s_ops)):
+            op = self.graph.Operators(s_ops[op_idx].original_idx)
+            for i in range(op.InputsLength()):
+                input_buffer_idx = op.Inputs(i)
+
+                if input_buffer_idx >= 0:
+                    if reord_tensor_final_use[input_buffer_idx] is None or reord_tensor_final_use[input_buffer_idx] < op_idx:
+                        reord_tensor_final_use[input_buffer_idx] = op_idx
+
+            for o in range(op.OutputsLength()):
+                output_buffer_idx = op.Outputs(o)
+                if output_buffer_idx >= 0:
+                    if reord_tensor_first_creation[output_buffer_idx] is None or reord_tensor_first_creation[output_buffer_idx] < op_idx:
+                        reord_tensor_first_creation[output_buffer_idx] = op_idx
 
         for i in range(len(self.tensors)):
             buffer_size = self.buffers[self.tensors[i].Buffer()].DataLength()
             if self.tensor_types[i] == 'Intermediate' and buffer_size == 0 and\
-                    isinstance(self.tensor_first_creation[i], int) and\
-                    isinstance(self.tensor_final_use[i], int):
+                    isinstance(reord_tensor_first_creation[i], int) and\
+                    isinstance(reord_tensor_final_use[i], int):
 
-                creation = self.tensor_first_creation[i]
-                last_use = self.tensor_final_use[i]
+                creation = reord_tensor_first_creation[i]
+                last_use = reord_tensor_final_use[i]
                 size = self.tensor_memory_sizes[i]
 
                 block  = mem_opt.MemoryBlock(creation=creation,

@@ -211,16 +211,34 @@ def save_memory_summary(model):
 
     grid_csv_file.close()
 
-def optimise_memory(model, base_file_name=""):
+def optimise_memory(model, base_file_name="", res_file=None):
 
+    # optimise original operation order
+    print(">>>>>> Optimising memory using original TFlite execution order")
     requirements = model.get_memory_requirements()
+    [gd_lower_bound, gd_upper_bound, gd_lbb_size, gd_lbb_det_size] = requirements.optimise(base_file_name + "_orig")
 
-    # requirements.print_requirements()
+    # optimise lazy operation order
+    print(">>>>>> Optimising memory using lazy execution order")
+    requirements = model.get_memory_requirements(reorder_execution="Lazy")
+    [lz_lower_bound, lz_upper_bound, lz_lbb_size, lz_lbb_det_size] = requirements.optimise(base_file_name + "_lazy")
 
-    requirements.optimise(base_file_name)
-
-    requirements.print_solution()
-
+    if res_file is not None:
+        with open(res_file, "a") as results_file:
+            results_file.write("%s, " % base_file_name)
+            results_file.write("%d, %d, " %
+                               (len(requirements.blocks),
+                                requirements.get_operation_count()))
+            results_file.write("%d, %d, %s, %s, " %
+                               (gd_lower_bound,
+                                gd_upper_bound,
+                                gd_lbb_size,
+                                gd_lbb_det_size))
+            results_file.write("%d, %d, %s, %s\n" %
+                               (lz_lower_bound,
+                                lz_upper_bound,
+                                lz_lbb_size,
+                                lz_lbb_det_size))
 
 def process_tflite_file(file_name):
 
@@ -231,7 +249,9 @@ def process_tflite_file(file_name):
         print("Failed to open file \"%s\"." % file_name)
         quit()
 
+    print("=" * (len(file_name)+14+21))
     print("====== Reading flatbuffer \"%s\" ======" % file_name)
+    print("=" * (len(file_name)+14+21))
     flatbuffer = tflite_file.read()
     print("Done.")
 
@@ -265,9 +285,15 @@ def process_tflite_file(file_name):
         print_operations_summary(model)
 
     if FLAGS.optimise_memory:
-        optimise_memory(model, base_file_name=base_name)
+        optimise_memory(model, base_file_name=base_name, res_file="mem_opt_results.csv")
 
 def main():
+
+    # reset results csv file and write header
+    if FLAGS.optimise_memory:
+        with open("mem_opt_results.csv", "w") as results_file:
+            results_file.write("model, tensors, ops, grdy lower bound, grdy upper bound, grdy lbb, grdy det lbb, "
+                               "lzy lower bound, lzy upper bound, lzy lbb, lzy det lbb\n")
 
     # if a filename was given then process the single file
     if os.path.isfile(FLAGS.file_name):
@@ -275,11 +301,11 @@ def main():
     else:  # if a directory name was given then process all .tflite files in that directory
         dir_contents = os.listdir(FLAGS.file_name)
 
-        print("Found %d entries in directory to process." % len(dir_contents))
+        #print("Found %d entries in directory to process." % len(dir_contents))
 
         for entry in dir_contents:
             file_path = os.path.join(FLAGS.file_name, entry)
-            print("Processing [%s] ext is [%s]" % (file_path, file_path[-7:]))
+            #print("Processing [%s] ext is [%s]" % (file_path, file_path[-7:]))
             if os.path.isfile(file_path) and file_path[-7:] == ".tflite":
                 process_tflite_file(file_path)
 

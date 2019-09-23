@@ -87,7 +87,8 @@ class MemoryRegion:
         if super_region.end is None:
             return True
 
-        # this region is infinite then this must be false
+        # this region is infinite and the super region isn't
+        #  then this must be false
         if self.end is None:
             return False
 
@@ -126,6 +127,7 @@ class MemoryRequirements:
 
     def calculate_lower_bound(self):
         max_concurrent_mem = 0
+        self.min_bound_blocks = [False] * len(self.blocks)
 
         # find the lower bound of required memory
         for op in range(self.get_operation_count()):
@@ -299,7 +301,7 @@ class MemoryRequirements:
                 if b.creation == op:
                     ordered_tensors += [i]
 
-        print("Created an ordered list of block indices with %d elements" % len(ordered_tensors))
+        # print("Created an ordered list of block indices with %d elements" % len(ordered_tensors))
 
         # perform heap allocation strategy using this order
         return self.ordered_heap_allocate(ordered_tensors)
@@ -346,6 +348,7 @@ class MemoryRequirements:
             # be impossible!
             if largest_adjacent_idx is None:
                 print("grow_from_list Error: Couldn't find a largest adjacent block while some blocks are unallocated!")
+                break
             else:
                 pattern = MemoryRequirements.heap_allocate_block(pattern, largest_adjacent_idx)
 
@@ -377,11 +380,11 @@ class MemoryRequirements:
                         best_mem_requirement = mem_requirement
 
                 if best_mem_requirement == self.lower_bound:
-                    print("returning pattern at lower_bound")
+                    #print("returning pattern at lower_bound")
                     return best_pattern
 
             # if no pattern matching the lower bound was found then return the best
-            print("returning best pattern after trying each permutation of the lower bound blocks")
+            #print("returning best pattern after trying each permutation of the lower bound blocks")
             return best_pattern
 
     def lbb_growth_method(self):
@@ -400,12 +403,12 @@ class MemoryRequirements:
                         low_bound_blocks += [i]
                 break
 
-        print("Found %d blocks defining the lower bound." % len(low_bound_blocks))
+        #print("Found %d blocks defining the lower bound." % len(low_bound_blocks))
         if len(low_bound_blocks) > 8:
             print("Error lbb_growth_method failed, %d blocks defining lower bound is more than 8 blocks limit." %
                   len(low_bound_blocks))
             print("Too many permutations to try!")
-            return self.blocks
+            return []
 
         # use a recurrsive function to generate all possible orders of this set of blocks
         # WARNING n! runtime, so it checks that there are no more than
@@ -436,7 +439,7 @@ class MemoryRequirements:
                     if b.overlaps(op):
                         low_bound_blocks += [i]
                 break
-        print("Found %d blocks defining the lower bound." % len(low_bound_blocks))
+        #print("Found %d blocks defining the lower bound." % len(low_bound_blocks))
 
         # create a list of the lbbs in decreasing order of operation range
         initial_block_idxs = []
@@ -447,7 +450,7 @@ class MemoryRequirements:
                     # print("###### is is a (%s)" % str(type(i)))
                     initial_block_idxs += [i]
 
-        print("Finished adding LBB in decreasing order of size.")
+        #print("Finished adding LBB in decreasing order of size.")
 
         # add the remaining blocks in decreasing order of mem-size
         blocks = self.grow_from_list(initial_block_idxs)
@@ -455,32 +458,42 @@ class MemoryRequirements:
 
     def optimise(self, base_file_name=""):
 
-        self.min_bound_blocks = [False] * len(self.blocks)
-
-        print("\nOptimising memory use of %d block used by %d operations." %
-              (len(self.blocks),
-               self.get_operation_count()))
+        #self.min_bound_blocks = [False] * len(self.blocks)
 
         self.calculate_lower_bound()
-        print("\nCalculated a lower bound of %d bytes" % self.lower_bound)
 
         # find upper bound using naive head allocation method
         heap_allocated_blocks = self.heap_allocation_method()
         upper_bound = MemoryRequirements.required_memory(heap_allocated_blocks)
-        print("\nCalculated an upper bound of %d bytes using the heap allocation strategy" % upper_bound)
         if base_file_name != "":
             self.save_memory_layout_image(heap_allocated_blocks, file_name=base_file_name+"_heap_mem.png")
 
+        print("\nOptimising memory [%d blocks, %d ops] memory bounds (%d - %d)" %
+              (len(self.blocks),
+               self.get_operation_count(),
+               self.lower_bound,
+               upper_bound))
+
         # optimise using growing from lower_bound_blocks method
         lbb_growth_blocks = self.lbb_growth_method()
-        lbb_size = MemoryRequirements.required_memory(lbb_growth_blocks)
-        print("\nCalculated an optimised memory size of %d bytes using the lbb_growth strategy" % lbb_size)
-        if base_file_name != "":
-            self.save_memory_layout_image(lbb_growth_blocks, file_name=base_file_name+"_lbbg_mem.png")
+        lbb_size = None
+        if lbb_growth_blocks == []:
+            print("Lbb growth method failed.")
+        else:
+            lbb_size = MemoryRequirements.required_memory(lbb_growth_blocks)
+            print("\nCalculated an optimised memory size of %d bytes using the lbb_growth strategy" % lbb_size)
+            if lbb_size == self.lower_bound:
+                print("Solution at lower bound found!")
+            if base_file_name != "":
+                self.save_memory_layout_image(lbb_growth_blocks, file_name=base_file_name+"_lbbg_mem.png")
 
         # optimise using growing from lower_bound_blocks method with deterministic initial blocks
         lbb_det_growth_blocks = self.lbb_det_growth_method()
         lbb_det_size = MemoryRequirements.required_memory(lbb_det_growth_blocks)
         print("\nCalculated an optimised memory size of %d bytes using the lbb_det_growth strategy" % lbb_det_size)
+        if lbb_det_size == self.lower_bound:
+            print("Solution at lower bound found!")
         if base_file_name != "":
             self.save_memory_layout_image(lbb_det_growth_blocks, file_name=base_file_name+"_lbbg_det_mem.png")
+
+        return [self.lower_bound, upper_bound, lbb_size, lbb_det_size]
