@@ -46,6 +46,35 @@ def trim_file_name(file_name):
     else:
         return file_name
 
+def format_bytes(bytes):
+
+    if bytes < 1024:
+      return str(bytes) + " Bytes"
+    elif bytes < (1024*1024):
+      return '{0:1.3g}'.format(bytes/1024) + " Kilobytes"
+    elif bytes < (1024*1024*1024):
+      return '{0:1.3g}'.format(bytes/(1024*1024)) + " Megabytes"
+    elif bytes < (1024*1024*1024*1024):
+      return '{0:1.3g}'.format(bytes/(1024*1024*1024)) + " Gigabytes"
+
+def format_centre(str, width, pad_char = " "):
+
+    if len(str) >= width:
+        return str
+
+    left_pad = math.floor((width - len(str)) / 2)
+    right_pad = width - len(str) - left_pad
+
+    return (pad_char * left_pad) + str + (pad_char * right_pad)
+
+def format_left(str, width, pad_char = " "):
+
+    if len(str) >= width:
+        return str
+
+    right_pad = width - len(str)
+
+    return str + (pad_char * right_pad)
 
 def print_ops_summary(model):
 
@@ -80,24 +109,34 @@ def print_operations_summary(model):
 def print_weights_summary(model):
 
     print("\nWeights Summary:")
-    print("\n%d Weight tensors, containing %d weights, taking %d bytes\n" %
-          (model.weights_tensor_count,
-           model.total_weights,
-           model.total_weights_bytes))
+    print("\n%s Weight tensors, containing %s weights, taking %s\n" %
+          ('{:,}'.format(model.weights_tensor_count),
+           '{:,}'.format(model.total_weights),
+           format_bytes(model.total_weights_bytes)))
     for type in model.weight_types:
         totals = model.weight_types[type]
         if totals['weights'] > 0:
-            print("  %8d %10s weights taking %d bytes" %
-                  (totals['weights'],
+            print("  %15s %10s weights taking %s" %
+                  ('{:,}'.format(totals['weights']),
                    model.types[type],
-                   totals['bytes']))
+                   format_bytes(totals['bytes'])))
 
     max_name_len = 0
+    max_size_len = 0
     for i, tensor in enumerate(model.tensors):
         if tensor.Buffer() != 0 and model.buffers[tensor.Buffer()].DataLength() != 0:
             max_name_len = max(max_name_len, len(tensor.Name().decode("utf-8")))
+        shape_str = "scalar"
+        if tensor.ShapeAsNumpy().size > 0:
+          dim_strings = []
+          for d in tensor.ShapeAsNumpy():
+            dim_strings += [str(d)]
+          shape_str = "(%s)" % (', '.join(dim_strings))
+        max_size_len = max(max_size_len, len(shape_str))
 
-    header_string = "Weights Details%s   Type   (shape)" % (" " * (max_name_len - 13))
+    header_string = "Weights Details%s   type     %s      size      " % \
+                    ((" " * (max_name_len - 13)),
+                     format_centre(" (shape) ", max_size_len, "-"))
     print("\n%s\n%s" %
           (header_string,
            "-" * len(header_string)))
@@ -111,14 +150,17 @@ def print_weights_summary(model):
                 if tensor.ShapeAsNumpy().size > 0:
                     dim_strings = []
                     for d in tensor.ShapeAsNumpy():
-                        dim_strings = str(d)
+                        dim_strings += [str(d)]
                     shape_str = "(%s)" % (', '.join(dim_strings))
 
-                print("%s%s %10s %s" %
+                size_bytes = model.buffers[tensor.Buffer()].DataLength()
+
+                print("%s%s %10s %s %s" %
                       (name,
                        " " * (max_name_len - len(name)),
-                       model.types[tensor.Type()],
-                       shape_str))
+                       format_centre(model.types[tensor.Type()],12),
+                       format_left(shape_str,max(9, max_size_len)),
+                       format_left(format_bytes(size_bytes),14)))
 
 
 def print_tensor_summary(model):
