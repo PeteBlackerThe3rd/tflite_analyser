@@ -56,13 +56,13 @@ class MemoryRegion:
             return [self]
 
         # if the new region overlaps completely with this one.
-        if new_region.start <= self.start and\
+        if new_region.start <= self.start and \
                 ((new_region.end is None and self.end is None) or new_region.end is None or (self.end is not None and new_region.end >= self.end)):
             # print("Carve returning empty set")
             return []
 
         # if the new region overlaps with the start of this region
-        if new_region.start <= self.start and\
+        if new_region.start <= self.start and \
                 (self.end is None or (new_region.end < self.end)):
             # print("Carve shortening the start of this region")
             return [MemoryRegion(new_region.end, self.end)]
