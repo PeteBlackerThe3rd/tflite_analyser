@@ -1,5 +1,6 @@
 import numpy as np
 import copy
+import svgwrite
 import png
 
 
@@ -27,7 +28,8 @@ class MemoryBlock:
             no_overlap = self.creation > adjacent.last_use or self.last_use < adjacent.creation
             return not no_overlap
         elif isinstance(adjacent, int):
-            return adjacent >= self.creation and adjacent <= self.last_use
+            return adjacent < adjacent <= self.last_use
+            # return adjacent >= self.creation and adjacent <= self.last_use
         else:
             print("Error: Non MemoryBlock or int types passed to MemoryBlock.overlaps!")
             return false
@@ -68,12 +70,13 @@ class MemoryRegion:
             return [MemoryRegion(new_region.end, self.end)]
 
         # if the new region overlaps with the end of this region
-        if self.end is not None and new_region.start < self.end and new_region.end >= self.end:
+        if (self.end is not None and
+                new_region.start < self.end < new_region.end):
             # print("Carve shortening the end of this region")
             return [MemoryRegion(self.start, new_region.start)]
 
-        # The only option left now is that the new rigion bisects this one, so return the two parts
-        # print("Carve bisecting this region")
+        # The only option left now is that the new rigion bisects this one,
+        # so return the two parts print("Carve bisecting this region")
         return [MemoryRegion(self.start, new_region.start),
                 MemoryRegion(new_region.end, self.end)]
 
@@ -101,6 +104,7 @@ class MemoryRequirements:
 
     def __init__(self):
         self.blocks = []
+        self.ops = []
         self.min_bound_blocks = []
         self.lower_bound = None
 
@@ -116,8 +120,19 @@ class MemoryRequirements:
                    b.creation,
                    b.last_use))
 
+    def print_requirements(self):
+        print("Tensor Buffer requirements.")
+        print("[%d] buffers to allocate" % len(self.blocks))
+        for i, buf in enumerate(self.blocks):
+            print("[%d] first op [%d] last op [%d] size [%d bytes]" %
+                  (i,
+                   buf.creation,
+                   buf.last_use,
+                   buf.size))
+
     def print_solution(self):
         print("print_solution ToDo")
+        print("Buffer Count [%d]" % len(self.blocks))
 
     def get_operation_count(self):
         max_op = 0
@@ -169,12 +184,118 @@ class MemoryRequirements:
         if right > left and bottom > top:
             img[left+border:right-border, top+border:bottom-border, :] = color
 
+    def save_memory_layout_svg(self, blocks, model, filename):
+        """
+        Function to save the allocation buffer locations and their scopes to a
+        vector svg file. This includes labels of operation scopes and the
+        scale of the memory axis
+        :param filename: name of te svg file to generate
+        :return: True on success false otherwise
+        """
+
+        memory_size = MemoryRequirements.required_memory(blocks)
+
+        print("Saving SVG of tensor buffer pre-allocations \"%s\"" % filename)
+
+        plot_width = 500
+        row_height = 18
+        plot_offset_x = 190
+        plot_offset_y = 60
+
+        if memory_size == 0:
+            print("Error: Cannot save memory layout when no blocks "
+                  "are allocated")
+            return False
+        else:
+            dwg = svgwrite.Drawing(filename,
+                                   size=(750, 90 + row_height * len(self.ops)),
+                                   profile='tiny')
+
+            # draw zebra background
+            for i in range(self.get_operation_count() + 1):
+              if (i % 2) == 0:
+                fill = svgwrite.rgb(95,95,95,'%')
+              else:
+                fill = svgwrite.rgb(90,90,90,'%')
+              dwg.add(dwg.rect((20, plot_offset_y + i*row_height),
+                               (plot_width + plot_offset_x,
+                                row_height),
+                               fill=fill))
+
+            # add operation labels
+            for i, op in enumerate(self.ops):
+
+                opr = model.operators[op.original_idx]
+                opr_name = model.operator_builtin_names[opr.OpcodeIndex()]
+                label = "%d %s" % (i, opr_name.lower())
+                # print("Operation %d label is %s" % (i, label))
+
+                dwg.add(dwg.text(label,
+                                 insert=(40, plot_offset_y + ((i+1)*row_height) - 5),
+                                 fill='black'))
+
+            # add axes and memory scale
+            dwg.add(dwg.line((plot_offset_x - row_height,
+                              plot_offset_y - row_height),
+                             (plot_offset_x - row_height,
+                              plot_offset_y + row_height * (self.get_operation_count() + 2)),
+                             stroke='black'))
+            dwg.add(dwg.line((plot_offset_x - row_height,
+                              plot_offset_y - row_height),
+                             (plot_offset_x + plot_width + row_height,
+                              plot_offset_y - row_height),
+                             stroke='black'))
+            dwg.add(dwg.line((plot_offset_x,
+                              plot_offset_y - row_height),
+                             (plot_offset_x,
+                              plot_offset_y - 2*row_height),
+                             stroke='black'))
+            dwg.add(dwg.line((plot_offset_x + plot_width,
+                              plot_offset_y - row_height),
+                             (plot_offset_x + plot_width,
+                              plot_offset_y - 2*row_height),
+                             stroke='black'))
+
+            dwg.add(dwg.text('0 KB',
+                             insert=(plot_offset_x,
+                                     plot_offset_y - 2*row_height),
+                             fill='black'))
+            dwg.add(dwg.text('%d KB' % int(memory_size / 1024),
+                             insert=(plot_offset_x + plot_width,
+                                     plot_offset_y - 2*row_height),
+                             fill='black'))
+
+            # draw allocated blocks
+            for i, b in enumerate(blocks):
+                if b.allocated():
+                    # print("Rendering allocated block with mem_offset %d" % b.mem_offset)
+                    mem_start = (b.mem_offset * plot_width) / memory_size
+                    mem_width = (b.size * plot_width) / memory_size
+
+                    op_start = row_height * b.creation
+                    op_range = row_height * (b.last_use - b.creation + 1)
+
+                    block_stroke = svgwrite.rgb(0,0,0)
+                    block_fill = svgwrite.rgb(255, 128, 128)
+                    if self.min_bound_blocks[i]:
+                      block_fill = svgwrite.rgb(128, 255, 128)
+
+                    dwg.add(
+                      dwg.rect((plot_offset_x + mem_start, plot_offset_y + op_start),
+                               (mem_width, op_range),
+                               fill=block_fill,
+                               stroke=block_stroke))
+
+            dwg.save()
+            return True
+
     def save_memory_layout_image(self, blocks, file_name="memory.png"):
 
         memory_size = MemoryRequirements.required_memory(blocks)
 
         if memory_size == 0:
-            print("Error: Cannot save memory layout when no blocks are allocated")
+            print("Error: Cannot save memory layout when no blocks are "
+                  "allocated")
         else:
             row_height = 5
 
@@ -235,6 +356,62 @@ class MemoryRequirements:
 
         return unallocated
 
+    def merge_layout_ops(self, model):
+        """
+        Method to merge the sub-tensors of layout only operations into their super
+        tensors and remove the layout operation. NOTE this currently simply
+        expands the size of the buffers, it doesn't comput the new shape and
+        mapping of the sub-tensor.
+        :return: Number of sub-tensors merged
+        """
+        # currently simply bodge that just does concatenate ops
+
+        remove_ops = []
+        for op_idx, op in enumerate(self.ops):
+            opr = model.operators[op.original_idx]
+            opr_name = model.operator_builtin_names[opr.OpcodeIndex()]
+            if opr_name == "CONCATENATION":
+                input_block_idx = None
+                for block_idx in range(len(self.blocks)):
+                    if self.blocks[block_idx].creation == op_idx:
+                        input_block_idx = block_idx
+
+                print("Found concat at op [%d] with creation [%d]" %
+                      (op_idx, input_block_idx))
+
+                if input_block_idx is not None:
+                    remove_idxs = []
+                    for block_idx in range(len(self.blocks)):
+                        if self.blocks[block_idx].last_use == op_idx:
+                            creation = self.blocks[input_block_idx].creation
+                            print("concat b [%d] input b [%d]" %
+                                  (creation, self.blocks[block_idx].creation))
+                            if creation > self.blocks[block_idx].creation:
+                                print("Updating creation op index "
+                                      "from %d to %d" %
+                                      (creation,
+                                       self.blocks[block_idx].creation))
+                                creation = self.blocks[block_idx].creation
+                                self.blocks[input_block_idx].creation = creation
+                            remove_idxs.append(block_idx)
+                            print("Merging sub-tensor [%d]" % block_idx)
+
+                    remove_idxs.reverse()
+                    for r_idx in remove_idxs:
+                        self.blocks.remove(self.blocks[r_idx])
+                    remove_ops.append(op_idx)
+
+        print(remove_ops)
+
+        remove_ops.reverse()
+        for r_op in remove_ops:
+            for block in self.blocks:
+                if block.creation > r_op:
+                    block.creation -= 1
+                if block.last_use > r_op:
+                    block.last_use -= 1
+            self.ops.remove(self.ops[r_op])
+
     @staticmethod
     def heap_allocate_block(blocks, new_block_idx):
         """
@@ -287,7 +464,9 @@ class MemoryRequirements:
 
         return heap_blocks
 
-    def heap_allocation_method(self):
+    def heap_allocation_method(self, reverse=False):
+
+        self.calculate_lower_bound()
 
         # copy requirements and reset memory offsets
         heap_blocks = copy.deepcopy(self.blocks)
@@ -296,20 +475,25 @@ class MemoryRequirements:
 
         # create set of tensor indices ordered by creating operation
         ordered_tensors = []
-        for op in range(self.get_operation_count()):
-            for i, b in enumerate(self.blocks):
-                if b.creation == op:
-                    ordered_tensors += [i]
-
-        # print("Created an ordered list of block indices with %d elements" % len(ordered_tensors))
+        if reverse:
+            for op in range(self.get_operation_count()-1, -1, -1):
+                for i, b in enumerate(self.blocks):
+                    if b.creation == op:
+                        ordered_tensors += [i]
+        else:
+            for op in range(self.get_operation_count()):
+                for i, b in enumerate(self.blocks):
+                    if b.creation == op:
+                        ordered_tensors += [i]
 
         # perform heap allocation strategy using this order
         return self.ordered_heap_allocate(ordered_tensors)
 
     def grow_from_list(self, inital_blocks):
         """
-        Method to create an allocation pattern starting with an inital set of given blocks
-        and then sequenntially adding the largest adjacent block using heap allocation.
+        Method to create an allocation pattern starting with an
+        inital set of given blocks and then sequenntially adding
+        the largest adjacent block using heap allocation.
         :param inital_blocks:
         :return:
         """
@@ -421,13 +605,15 @@ class MemoryRequirements:
     def lbb_det_growth_method(self):
         """
         lower bound blocks deterministic growth method
-        initially places the blocks within the lower bound in decreasing order of operation scope,
-        then places remaining blocks in decreasing order of mem-size
+        initially places the blocks within the lower bound in decreasing
+        order of operation scope, then places remaining blocks in decreasing
+        order of mem-size
         :return: list of allocated blocks
         """
 
         # find the first set of blocks which form the lower bound
-        # NOTE it's possible there are several equal sized sets of blocks which co-define the lower bound
+        # NOTE it's possible there are several equal sized sets of blocks
+        # which co-define the lower bound
         low_bound_blocks = []
         for op in range(self.get_operation_count()):
             concurrent_mem = 0
@@ -466,9 +652,12 @@ class MemoryRequirements:
         heap_allocated_blocks = self.heap_allocation_method()
         upper_bound = MemoryRequirements.required_memory(heap_allocated_blocks)
         if base_file_name != "":
-            self.save_memory_layout_image(heap_allocated_blocks, file_name=base_file_name+"_heap_mem.png")
+            self.save_memory_layout_image(
+              heap_allocated_blocks, file_name=base_file_name+"_heap_mem.png"
+            )
 
-        print("\nOptimising memory [%d blocks, %d ops] memory bounds (%d - %d)" %
+        print("\nOptimising memory [%d blocks, %d ops] "
+              "memory bounds (%d - %d)" %
               (len(self.blocks),
                self.get_operation_count(),
                self.lower_bound,
@@ -477,23 +666,31 @@ class MemoryRequirements:
         # optimise using growing from lower_bound_blocks method
         lbb_growth_blocks = self.lbb_growth_method()
         lbb_size = None
-        if lbb_growth_blocks == []:
+        if lbb_growth_blocks:
             print("Lbb growth method failed.")
         else:
             lbb_size = MemoryRequirements.required_memory(lbb_growth_blocks)
-            print("\nCalculated an optimised memory size of %d bytes using the lbb_growth strategy" % lbb_size)
+            print("\nCalculated an optimised memory size of %d bytes "
+                  "using the lbb_growth strategy" % lbb_size)
             if lbb_size == self.lower_bound:
                 print("Solution at lower bound found!")
             if base_file_name != "":
-                self.save_memory_layout_image(lbb_growth_blocks, file_name=base_file_name+"_lbbg_mem.png")
+                self.save_memory_layout_image(
+                  lbb_growth_blocks, file_name=base_file_name+"_lbbg_mem.png"
+                )
 
-        # optimise using growing from lower_bound_blocks method with deterministic initial blocks
+        # optimise using growing from lower_bound_blocks method with
+        # deterministic initial blocks
         lbb_det_growth_blocks = self.lbb_det_growth_method()
         lbb_det_size = MemoryRequirements.required_memory(lbb_det_growth_blocks)
-        print("\nCalculated an optimised memory size of %d bytes using the lbb_det_growth strategy" % lbb_det_size)
+        print("\nCalculated an optimised memory size of %d bytes using "
+              "the lbb_det_growth strategy" % lbb_det_size)
         if lbb_det_size == self.lower_bound:
             print("Solution at lower bound found!")
         if base_file_name != "":
-            self.save_memory_layout_image(lbb_det_growth_blocks, file_name=base_file_name+"_lbbg_det_mem.png")
+            self.save_memory_layout_image(
+              lbb_det_growth_blocks,
+              file_name=base_file_name+"_lbbg_det_mem.png"
+            )
 
         return [self.lower_bound, upper_bound, lbb_size, lbb_det_size]

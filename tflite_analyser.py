@@ -260,6 +260,36 @@ def optimise_memory(model, base_file_name="", res_file=None):
     requirements = model.get_memory_requirements()
     [gd_lower_bound, gd_upper_bound, gd_lbb_size, gd_lbb_det_size] = requirements.optimise(base_file_name + "_orig")
 
+    if FLAGS.save_svg != "":
+
+        requirements = model.get_memory_requirements(reorder_execution="Easger")
+        # requirements.merge_layout_ops(model)
+
+        # requirements.print_requirements()
+
+        print("One off heap pre-allocation")
+        heap_allocated_blocks = requirements.heap_allocation_method(
+          reverse=False
+        )
+        # print("Allocated [%d] blocks" % len(heap_allocated_blocks))
+        requirements.save_memory_layout_svg(heap_allocated_blocks,
+                                            model,
+                                            FLAGS.save_svg+"eager")
+
+        requirements = model.get_memory_requirements(reorder_execution="Lazy")
+        # requirements.merge_layout_ops(model)
+
+        # requirements.print_requirements()
+
+        print("One off heap pre-allocation")
+        heap_allocated_blocks = requirements.heap_allocation_method(
+          reverse=False
+        )
+        # print("Allocated [%d] blocks" % len(heap_allocated_blocks))
+        requirements.save_memory_layout_svg(heap_allocated_blocks,
+                                            model,
+                                            FLAGS.save_svg + "lazy")
+
     # optimise lazy operation order
     print(">>>>>> Optimising memory using lazy execution order")
     requirements = model.get_memory_requirements(reorder_execution="Lazy")
@@ -354,24 +384,31 @@ def main():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('file_name', type=str, help='Name of the tflite flatbuffer file to load.')
+    parser.add_argument('file_name', type=str,
+                        help='Name of the tflite flatbuffer file to load.')
     parser.add_argument('-i',  '--index',
                         type=int, default=0,
                         help='Index of the subgraph to analyse. Defaults to 0')
-    parser.add_argument('-a', '--all', action="store_true", help='Print out all details of this model.')
+    parser.add_argument('-a', '--all', action="store_true",
+                        help='Print out all details of this model.')
     parser.add_argument('-sg', '--sub_graphs',
                         action="store_true",
-                        help='Print a list of all the graphs stored in this tflite flatbuffer.')
+                        help='Print a list of all the graphs stored in '
+                             'this tflite flatbuffer.')
     parser.add_argument('-o', '--operations',
                         action="store_true",
-                        help='Print a summary of the operations used in this model.')
+                        help='Print a summary of the operations used '
+                             'in this model.')
     parser.add_argument('-ot', '--op_types',
                         action="store_true",
-                        help='Print a summary of the operation types used in this model.')
-    parser.add_argument('-w', '--weights', action="store_true", help='Print detail of the weights of this model.')
+                        help='Print a summary of the operation types '
+                             'used in this model.')
+    parser.add_argument('-w', '--weights', action="store_true",
+                        help='Print detail of the weights of this model.')
     parser.add_argument('-m', '--memory',
                         action="store_true",
-                        help='Print details of memory allocation required by this model.')
+                        help='Print details of memory allocation required '
+                             'by this model.')
     parser.add_argument('-t', '--tensors',
                         action="store_true",
                         help='Print details of the tensors used in this model.')
@@ -380,7 +417,13 @@ if __name__ == '__main__':
                         help='Write the selected detail to a set of CSV files.')
     parser.add_argument('-om', '--optimise_memory',
                         action="store_true",
-                        help='Uses various algorithms to precalculate an optimal memory useage pattern.')
+                        help='Uses various algorithms to precalculate an '
+                             'optimal memory useage pattern.')
+    parser.add_argument('-svg', '--save_svg',
+                        default="",
+                        help='generate an svg plot showing the locations of '
+                             'pre-allocated buffer locations when optimising '
+                             'memory use.')
 
     FLAGS, unparsed = parser.parse_known_args()
 

@@ -375,6 +375,8 @@ class AnalysedTFliteModel:
 
             s_ops = new_order
 
+        requirements.ops = s_ops
+
         # re-calculate creation and last use operations for each tensor after re-ordering operations
         reord_tensor_first_creation = [None] * len(self.tensors)
         reord_tensor_final_use = [None] * len(self.tensors)
